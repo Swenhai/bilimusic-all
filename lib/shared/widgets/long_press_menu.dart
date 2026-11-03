@@ -70,6 +70,16 @@ Menu buildMusicContextMenu({
           }
         },
       ),
+      if (ref != null && music.id.isNotEmpty)
+        MenuAction(
+          title: '展开所属合集',
+          image: MenuImage.icon(Icons.video_library_outlined),
+          callback: () => openSeasonPlaylist(
+            context: context,
+            ref: ref,
+            bvid: music.id,
+          ),
+        ),
       MenuAction(
         title: isFav ? '取消收藏' : '收藏',
         image: MenuImage.icon(isFav ? Icons.favorite : Icons.favorite_border),
@@ -140,6 +150,29 @@ Menu buildMusicContextMenu({
           callback: () => openOriginalPage(music),
         ),
     ],
+  );
+}
+
+/// 把视频所属的 B 站 UGC 合集展开成一整张歌单。
+///
+/// 合集里每集是**独立 bvid**（不是分P），拼成歌单页后可以顺序/随机播，也能整张收藏。
+/// 不属于合集或请求失败时只提示一句，不打断当前播放。
+Future<void> openSeasonPlaylist({
+  required BuildContext context,
+  required WidgetRef ref,
+  required String bvid,
+}) async {
+  final messenger = ScaffoldMessenger.of(context);
+  final season = await ref.read(apiServiceProvider).getVideoSeason(bvid);
+  if (!context.mounted) return;
+  if (season == null || !season.isSeries) {
+    messenger.showSnackBar(const SnackBar(content: Text('该视频不属于合集')));
+    return;
+  }
+  ShellPageManager.instance.goToPlaylist(
+    playlistId: 'season_${season.id}',
+    songs: season.episodes,
+    playlistName: season.title,
   );
 }
 

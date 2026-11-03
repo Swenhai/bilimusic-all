@@ -10,11 +10,13 @@ import 'package:bilimusic/domain/bili_fav_folder.dart';
 import 'package:bilimusic/domain/bili_fav_resource.dart';
 import 'package:bilimusic/domain/bili_following.dart';
 import 'package:bilimusic/domain/bili_item.dart';
+import 'package:bilimusic/domain/bili_season.dart';
 import 'package:bilimusic/domain/hot_song.dart';
 import 'package:bilimusic/domain/music.dart';
 import 'package:bilimusic/domain/search_result.dart';
 import 'package:bilimusic/domain/search_suggest.dart';
 import 'package:bilimusic/core/network/av_bv.dart';
+import 'package:bilimusic/shared/utils/title_meta_filter.dart';
 
 /// 离线查表钩子：命中且音质够用时返回本地文件路径与实际音质，否则 null。
 ///
@@ -163,10 +165,84 @@ class ApiService {
         const [];
   }
 
+  /// 获取视频所属 UGC 合集（`view` 的 `data.ugc_season`）的全部剧集。
+  ///
+  /// 合集与分P 不是一回事：`sections[].episodes[]` 里每一集都是**独立 bvid**，
+  /// 因此拆出来的 [Music] 必须同时带自己的 bvid 与 `arc.cid` 才能独立取流。
+  /// 不属于合集、合集为空、请求失败时一律返回 null（调用方按普通单曲处理）。
+  Future<BiliSeason?> getVideoSeason(String bvid) async {
+    if (bvid.isEmpty) return null;
+    try {
+      final data = await _client.get(
+        '/x/web-interface/view',
+        query: {'bvid': bvid},
+      );
+      if (data is! Map<String, dynamic>) return null;
+
+      final season = data['ugc_season'];
+      if (season is! Map) return null;
+
+      // 合集头部的 UP 主作为缺省创作者（单集 arc 没给 owner 时兜底）
+      final fallbackOwner = data['owner'] is Map
+          ? Artist.fromOwner(data['owner'] as Map)
+          : const Artist();
+
+      final episodes = <Music>[];
+      for (final section in (season['sections'] as List? ?? const [])) {
+        if (section is! Map) continue;
+        for (final ep in (section['episodes'] as List? ?? const [])) {
+          if (ep is! Map) continue;
+          // 合集接口两套写法：新接口把稿件信息放 arc，老接口字段平铺在 ep 上
+          final arc = ep['arc'] is Map ? ep['arc'] as Map : ep;
+          final epBvid = (ep['bvid'] ?? arc['bvid'])?.toString() ?? '';
+          if (epBvid.isEmpty) continue;
+
+          final rawTitle = (arc['title'] ?? ep['title'] ?? '').toString();
+          final rawPic = (arc['pic'] ?? '').toString();
+          final cid = (arc['cid'] ?? ep['cid'] ?? '').toString();
+          final seconds =
+              int.tryParse((arc['duration'] ?? 0).toString()) ?? 0;
+
+          episodes.add(
+            Music(
+              id: epBvid,
+              cid: cid,
+              title: rawTitle.isEmpty
+                  ? '第 ${episodes.length + 1} 集'
+                  : TitleMetaFilter.maybeClean(rawTitle),
+              artist: arc['owner'] is Map
+                  ? Artist.fromOwner(arc['owner'] as Map)
+                  : fallbackOwner,
+              album: season['title']?.toString() ?? '',
+              coverUrl: rawPic.isNotEmpty ? '$rawPic$biliCoverThumbSuffix' : '',
+              duration: Duration(seconds: seconds),
+              audioUrl: '',
+            ),
+          );
+        }
+      }
+
+      if (episodes.isEmpty) return null;
+      final seasonCover = (season['cover'] ?? '').toString();
+      return BiliSeason(
+        id: int.tryParse(season['id']?.toString() ?? '') ?? 0,
+        title: TitleMetaFilter.maybeClean(
+          season['title']?.toString() ?? '合集',
+        ),
+        coverUrl: seasonCover.isNotEmpty
+            ? '$seasonCover$biliCoverThumbSuffix'
+            : '',
+        episodes: episodes,
+      );
+    } on BiliException catch (e) {
+      debugPrint('[ApiService] getVideoSeason($bvid): $e');
+      return null;
+    }
+  }
+
   // ====================================================================
   //  音频 URL
   // ====================================================================
-
   /// 获取可播放的音频路径，按「离线缓存 → 临时缓存 → 联网取流下载」顺序解析：
   ///
   /// 1. 离线缓存（`downloads` 表 + 磁盘文件）：命中且音质够用就直接返回本地路径，

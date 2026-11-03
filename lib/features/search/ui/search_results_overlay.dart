@@ -41,10 +41,22 @@ class _SearchResultsOverlayState extends ConsumerState<SearchResultsOverlay> {
     ref.read(searchResultsProvider.notifier).selectType(type);
   }
 
-  void _playResult(SearchResult result) {
+  Future<void> _playResult(SearchResult result) async {
     if (result.type != SearchResultType.video) return;
     // 分P已预取时直接携带 cid；缺失时 playMusic 内部经 ensureCid 补齐
     final pages = ref.read(searchResultsProvider).pages[result.id];
+
+    // 先判合集（UGC 合集是多条独立 bvid，只播当前一条等于把一张专辑播成一首）
+    final season = await ref.read(apiServiceProvider).getVideoSeason(result.id);
+    if (season != null && season.isSeries) {
+      ShellPageManager.instance.goToPlaylist(
+        playlistId: 'season_${season.id}',
+        songs: season.episodes,
+        playlistName: season.title,
+      );
+      return;
+    }
+
     ref
         .read(playbackCommandsProvider.notifier)
         .playMusic(result.toMusic(pages: pages));
